@@ -84,7 +84,8 @@ class AsyncSlskdClient:
         return await self._call(self._client.transfers.enqueue, username, files)
 
     async def get_all_downloads(self) -> Optional[List[Dict[str, Any]]]:
-        return await self._call(self._client.transfers.get_all_downloads, False)
+        # includeRemoved=True ensures recently completed downloads are still returned
+        return await self._call(self._client.transfers.get_all_downloads, True)
 
     async def get_application_state(self) -> Optional[Dict[str, Any]]:
         return await self._call(self._client.application.state)
@@ -108,11 +109,23 @@ tracked_downloads: Dict[str, Dict[str, Any]] = {}
 cog_instance: Optional["SlskdCog"] = None  # Populated once the cog loads
 
 
-def make_transfer_key(username: str, path: Optional[str]) -> str:
+def _basename(path: Optional[str]) -> str:
+    if not path:
+        return ""
+    normalized = path.replace("\\", "/").rstrip("/")
+    return normalized.rsplit("/", 1)[-1]
+
+
+def display_filename(path: Optional[str]) -> str:
+    """Return the human-friendly basename from any path format."""
+    return _basename(path) or "unknown"
+
+
+def make_transfer_key(username: Optional[str], path: Optional[str]) -> str:
     """Creates a normalized key for tracking downloads."""
-    safe_username = username or "unknown"
-    safe_path = (path or "").rsplit("/", 1)[-1]
-    return f"{safe_username}:{safe_path.lower()}"
+    safe_username = (username or "unknown").lower()
+    safe_path = _basename(path).lower()
+    return f"{safe_username}:{safe_path}"
 
 
 class SearchResultPaginator(View):
@@ -151,6 +164,7 @@ class SearchResultPaginator(View):
             # Add files
             for file_info in response_group.get("files", []):
                 filename = file_info.get("filename", "")
+                display_name = display_filename(filename)
                 flat_list.append(
                     {
                         "type": "file",
@@ -158,6 +172,7 @@ class SearchResultPaginator(View):
                         "token": token,
                         "file": file_info,
                         "path": filename,
+                        "display_name": display_name,
                         "size_mb": round(file_info.get("size", 0) / (1024 * 1024), 2),
                         "slots_free": response_group.get("hasFreeUploadSlot", False),
                         "speed_kb": round(
@@ -172,6 +187,17 @@ class SearchResultPaginator(View):
             # If folder search is desired, it's often done via browsing.
 
         return flat_list
+
+    def refresh_results(self, results: List[Dict[str, Any]]) -> bool:
+        """Update stored results; return True if list length changed."""
+        new_list = self.flatten_results(results)
+        changed = len(new_list) != len(self.all_results)
+        self.all_results = new_list
+        self.total_pages = max(1, -(-len(self.all_results) // self.per_page))
+        self.current_page = min(self.current_page, self.total_pages - 1)
+        user_search_results[self.ctx.author.id] = self.all_results
+        self.update_buttons()
+        return changed
 
     def get_page_embed(self) -> discord.Embed:
         """Creates an embed for the current page of results."""
@@ -191,8 +217,9 @@ class SearchResultPaginator(View):
             self.all_results[start_index:end_index], start=start_index + 1
         ):
             slots = "✅" if item["slots_free"] else "❌"
+            display_name = item.get("display_name") or display_filename(item.get("path"))
             line = (
-                f"**{i}.** {item['path'].split('/')[-1]}\n"
+                f"**{i}.** {display_name}\n"
                 f"   `[{item['type']}]` `[{item['size_mb']} MB]` `[{slots} Slot]` `[User: {item['username']}]`"
             )
             description_lines.append(line)
@@ -208,6 +235,10 @@ class SearchResultPaginator(View):
         """Updates the message with the new embed and button states."""
         self.update_buttons()
         await interaction.response.edit_message(embed=self.get_page_embed(), view=self)
+
+    async def push_update(self):
+        if getattr(self, "message", None):
+            await self.message.edit(embed=self.get_page_embed(), view=self)
 
     def update_buttons(self):
         """Disables/Enables buttons based on the current page."""
@@ -302,12 +333,21 @@ class SlskdCog(commands.Cog):
         self, ctx: commands.Context, content: Optional[str] = None, **kwargs
     ):
         """Send a message without relying on message history permissions."""
+        if content is None and "embed" not in kwargs and "view" not in kwargs:
+            raise ValueError("safe_send requires content or embed/view")
+
         try:
-            if content is None and "embed" not in kwargs and "view" not in kwargs:
-                raise ValueError("safe_send requires content or embed/view")
             return await ctx.reply(content, **kwargs)
         except discord.Forbidden:
+            pass
+
+        try:
             return await ctx.send(content, **kwargs)
+        except discord.Forbidden:
+            logger.warning(
+                "Missing permission to send messages in channel %s", ctx.channel
+            )
+            return None
 
     async def trigger_navidrome_scan(self):
         """Triggers a library scan on the Navidrome server."""
@@ -357,33 +397,33 @@ class SlskdCog(commands.Cog):
             )
             return
 
-        # Poll for results
-        results = None
-        for _ in range(10):  # Poll for 10 seconds (10 * 1s)
+        paginator: Optional[SearchResultPaginator] = None
+        for _ in range(20):  # poll up to ~20 seconds
             await asyncio.sleep(1)
             status = await self.api.get_search_state(search_id)
-            if status and status.get("isComplete"):
-                logger.info(f"Search {search_id} for '{query}' is complete.")
-                results = await self.api.get_search_results(search_id)
-                break
-            elif not status:
+            if status is None:
                 await msg.edit(content=f"Error checking search status for `{query}`.")
                 return
 
-        if not results:
-            # Check if search timed out but got *some* results
-            results = await self.api.get_search_results(search_id)
-            if not results:
-                await msg.edit(
-                    content=f"Search for `{query}` completed with no results."
-                )
-                return
+            responses = await self.api.get_search_results(search_id) or []
+            total_files = sum(len(r.get("files", [])) for r in responses)
 
-        # We have results, send the paginator
-        paginator = SearchResultPaginator(ctx, results, query)
-        paginator.message = await msg.edit(
-            content=None, embed=paginator.get_page_embed(), view=paginator
-        )
+            if total_files and paginator is None:
+                paginator = SearchResultPaginator(ctx, responses, query)
+                paginator.message = await msg.edit(
+                    content=None, embed=paginator.get_page_embed(), view=paginator
+                )
+                msg = paginator.message
+            elif paginator and paginator.refresh_results(responses) and paginator.message:
+                await paginator.push_update()
+
+            if status.get("isComplete"):
+                break
+
+        if paginator is None:
+            await msg.edit(content=f"Search for `{query}` completed with no results.")
+        else:
+            await paginator.push_update()
 
     @commands.command(name="dl", aliases=["download"])
     async def download(self, ctx: commands.Context, number: int):
@@ -422,7 +462,7 @@ class SlskdCog(commands.Cog):
                 await self.safe_send(ctx, "Failed to queue download. Please try again.")
                 return
 
-            filename = item["path"].split("/")[-1]
+            filename = display_filename(item["path"])
             await self.safe_send(ctx, f"✅ Queued for download: `{filename}`")
 
             transfer_key = make_transfer_key(item["username"], item["path"])
@@ -462,7 +502,7 @@ class SlskdCog(commands.Cog):
                         continue
 
                     state = file_info.get("state", "Unknown")
-                    filename = file_info.get("filename", "N/A").split("/")[-1]
+                    filename = display_filename(file_info.get("filename"))
                     percent = file_info.get("percentComplete", 0) or 0
                     bar = "🟩" * int(percent / 10) + "⬜" * (10 - int(percent / 10))
 
@@ -518,9 +558,15 @@ class SlskdCog(commands.Cog):
                             continue
 
                         key = make_transfer_key(username, file_info.get("filename"))
-                        state = file_info.get("state")
+                        state = (file_info.get("state") or "").lower()
+                        percent = file_info.get("percentComplete", 0) or 0
+                        bytes_remaining = file_info.get("bytesRemaining")
 
-                        if state == "Completed":
+                        is_complete = state.startswith("completed") or state == "succeeded"
+                        if bytes_remaining == 0 and percent >= 99.9:
+                            is_complete = True
+
+                        if is_complete:
                             completed_transfers.add(key)
                         else:
                             active_transfers[key] = state
