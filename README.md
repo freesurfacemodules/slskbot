@@ -66,7 +66,7 @@ These define the HOST directory paths where your remote storage is mounted.
    docker-compose logs -f discord-bot
 --- 2a. DISCORD BOT COMMANDS ---
 - `!search <query>`: Runs a Soulseek search through slskd and returns a paginated embed of up to 10 results per page. Use the buttons to page through results.
-- `!dl <number>`: Queues the numbered entry from your most recent search result. Only file downloads are supported today.
+- `!dl <number>`: Queues the numbered entry from your most recent search result. Files download one-by-one; folders queue every file inside while preserving the remote directory structure.
 - `!progress` / `!status`: Shows the current download queue with progress bars, regardless of who requested the transfer.
 - `!help`: Displays this command cheat sheet inside Discord.
 - Buttons: The paginator view adds `First/Prev/Next/Last` navigation plus a `Cancel Search` button to drop cached results if you no longer need them.

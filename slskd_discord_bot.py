@@ -105,15 +105,30 @@ class AsyncSlskdClient:
 user_search_results: Dict[int, List[Dict[str, Any]]] = {}
 # { "username:filename": { ...info... } }
 tracked_downloads: Dict[str, Dict[str, Any]] = {}
+folder_notifications: Dict[str, Dict[str, Any]] = {}
 
 cog_instance: Optional["SlskdCog"] = None  # Populated once the cog loads
 
 
-def _basename(path: Optional[str]) -> str:
+def _normalize_path(path: Optional[str]) -> str:
     if not path:
         return ""
-    normalized = path.replace("\\", "/").rstrip("/")
+    return path.replace("\\", "/").rstrip("/")
+
+
+def _basename(path: Optional[str]) -> str:
+    normalized = _normalize_path(path)
+    if not normalized:
+        return ""
     return normalized.rsplit("/", 1)[-1]
+
+
+def _dirname(path: Optional[str]) -> str:
+    normalized = _normalize_path(path)
+    if not normalized:
+        return ""
+    parts = normalized.rsplit("/", 1)
+    return parts[0] if len(parts) > 1 else ""
 
 
 def display_filename(path: Optional[str]) -> str:
@@ -126,6 +141,22 @@ def make_transfer_key(username: Optional[str], path: Optional[str]) -> str:
     safe_username = (username or "unknown").lower()
     safe_path = _basename(path).lower()
     return f"{safe_username}:{safe_path}"
+
+
+def make_folder_id(username: Optional[str], directory: Optional[str]) -> str:
+    safe_username = (username or "unknown").lower()
+    safe_dir = _normalize_path(directory).lower()
+    return f"{safe_username}:{safe_dir}"
+
+
+def result_sort_key(item: Dict[str, Any]):
+    norm = _normalize_path(item.get("path"))
+    if norm:
+        segments = tuple(norm.split("/"))
+    else:
+        segments = (item.get("display_name") or "",)
+    type_rank = 0 if item.get("type") == "folder" else 1
+    return (segments, type_rank, item.get("display_name") or "")
 
 
 class SearchResultPaginator(View):
@@ -161,10 +192,15 @@ class SearchResultPaginator(View):
             if not username or not token:
                 continue
 
+            folder_map: Dict[str, Dict[str, Any]] = {}
+
             # Add files
             for file_info in response_group.get("files", []):
                 filename = file_info.get("filename", "")
                 display_name = display_filename(filename)
+                norm_path = _normalize_path(filename)
+                segments = tuple(norm_path.split("/")) if norm_path else ()
+                depth = max(len(segments) - 1, 0)
                 flat_list.append(
                     {
                         "type": "file",
@@ -173,6 +209,7 @@ class SearchResultPaginator(View):
                         "file": file_info,
                         "path": filename,
                         "display_name": display_name,
+                        "depth": depth,
                         "size_mb": round(file_info.get("size", 0) / (1024 * 1024), 2),
                         "slots_free": response_group.get("hasFreeUploadSlot", False),
                         "speed_kb": round(
@@ -181,11 +218,39 @@ class SearchResultPaginator(View):
                     }
                 )
 
-            # Add directories
-            # NOTE: slskd search API (v0) doesn't seem to return directories in the same way
-            # as files. We'll focus on file downloads as it's more reliable.
-            # If folder search is desired, it's often done via browsing.
+                directory = _dirname(filename)
+                if directory:
+                    data = folder_map.setdefault(
+                        directory,
+                        {"files": [], "size": 0},
+                    )
+                    data["files"].append(file_info)
+                    data["size"] += file_info.get("size", 0)
 
+            for directory, data in sorted(folder_map.items()):
+                folder_name = display_filename(directory) or directory or "Folder"
+                norm_dir = _normalize_path(directory)
+                segments = tuple(norm_dir.split("/")) if norm_dir else ()
+                depth = max(len(segments) - 1, 0)
+                flat_list.append(
+                    {
+                        "type": "folder",
+                        "username": username,
+                        "token": token,
+                        "path": directory,
+                        "display_name": folder_name,
+                        "depth": depth,
+                        "files": data["files"],
+                        "file_count": len(data["files"]),
+                        "size_mb": round(data["size"] / (1024 * 1024), 2),
+                        "slots_free": response_group.get("hasFreeUploadSlot", False),
+                        "speed_kb": round(
+                            response_group.get("uploadSpeed", 0) / 1024, 2
+                        ),
+                    }
+                )
+
+        flat_list.sort(key=result_sort_key)
         return flat_list
 
     def refresh_results(self, results: List[Dict[str, Any]]) -> bool:
@@ -218,8 +283,20 @@ class SearchResultPaginator(View):
         ):
             slots = "✅" if item["slots_free"] else "❌"
             display_name = item.get("display_name") or display_filename(item.get("path"))
+            depth = item.get("depth", 0)
+            prefix = (">" * depth + " ") if depth else ""
+
+            if item["type"] == "folder":
+                name_block = (
+                    "```ansi\n"
+                    f"\u001b[33m{prefix}📁 {display_name} ({item.get('file_count', 0)} files)\u001b[0m\n"
+                    "```"
+                )
+            else:
+                name_block = f"{prefix}{display_name}"
+
             line = (
-                f"**{i}.** {display_name}\n"
+                f"**{i}.** {name_block}\n"
                 f"   `[{item['type']}]` `[{item['size_mb']} MB]` `[{slots} Slot]` `[User: {item['username']}]`"
             )
             description_lines.append(line)
@@ -380,6 +457,29 @@ class SlskdCog(commands.Cog):
         except Exception as e:
             logger.error(f"An error occurred while triggering Navidrome scan: {e}")
 
+    async def _handle_folder_progress(self, info: Dict[str, Any]):
+        folder_id = info.get("folder_id")
+        if not folder_id:
+            return
+
+        folder_state = folder_notifications.get(folder_id)
+        if not folder_state:
+            return
+
+        folder_state["completed"] = folder_state.get("completed", 0) + 1
+        if folder_state["completed"] >= folder_state.get("total", 0):
+            try:
+                user = await self.bot.fetch_user(folder_state["user_id"])
+                channel = await self.bot.fetch_channel(folder_state["channel_id"])
+                if user and channel:
+                    await channel.send(
+                        f"{user.mention} Folder `{folder_state['name']}` has finished downloading ({folder_state['total']} files)."
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send folder completion notice: {e}")
+            finally:
+                folder_notifications.pop(folder_id, None)
+
     @commands.command(name="search")
     async def search(self, ctx: commands.Context, *, query: str):
         """Searches slskd for a query.
@@ -451,34 +551,82 @@ class SlskdCog(commands.Cog):
         item = results[index]
 
         try:
-            if item["type"] != "file":
-                await self.safe_send(ctx, "Folder downloads are not supported yet.")
-                return
-
-            file_payload = dict(item["file"])
-            file_payload["token"] = item["token"]
-            success = await self.api.enqueue_files(item["username"], [file_payload])
-            if not success:
-                await self.safe_send(ctx, "Failed to queue download. Please try again.")
-                return
-
-            filename = display_filename(item["path"])
-            await self.safe_send(ctx, f"✅ Queued for download: `{filename}`")
-
-            transfer_key = make_transfer_key(item["username"], item["path"])
-            tracked_downloads[transfer_key] = {
-                "user_id": ctx.author.id,
-                "channel_id": ctx.channel.id,
-                "filename": filename,
-                "notified": False,
-                "search_path": item["path"],
-            }
+            if item["type"] == "file":
+                await self._queue_single_file(ctx, item)
+            elif item["type"] == "folder":
+                await self._queue_folder(ctx, item)
+            else:
+                await self.safe_send(ctx, "Unknown item type. Cannot download.")
 
         except Exception as e:
             logger.error(f"Error during !dl command: {e}")
             await self.safe_send(
                 ctx, f"An error occurred while trying to queue the download: {e}"
             )
+
+    async def _queue_single_file(self, ctx: commands.Context, item: Dict[str, Any]):
+        file_payload = dict(item["file"])
+        file_payload["token"] = item["token"]
+        success = await self.api.enqueue_files(item["username"], [file_payload])
+        if not success:
+            await self.safe_send(ctx, "Failed to queue download. Please try again.")
+            return
+
+        filename = display_filename(item["path"])
+        await self.safe_send(ctx, f"✅ Queued for download: `{filename}`")
+
+        transfer_key = make_transfer_key(item["username"], item["path"])
+        tracked_downloads[transfer_key] = {
+            "user_id": ctx.author.id,
+            "channel_id": ctx.channel.id,
+            "filename": filename,
+            "notified": False,
+            "search_path": item["path"],
+        }
+
+    async def _queue_folder(self, ctx: commands.Context, item: Dict[str, Any]):
+        folder_files = item.get("files", [])
+        if not folder_files:
+            await self.safe_send(ctx, "No files found in that folder result.")
+            return
+
+        payload = []
+        for file_info in folder_files:
+            file_payload = dict(file_info)
+            file_payload["token"] = item["token"]
+            payload.append(file_payload)
+
+        success = await self.api.enqueue_files(item["username"], payload)
+        if not success:
+            await self.safe_send(ctx, "Failed to queue folder download. Please try again.")
+            return
+
+        folder_name = item.get("display_name") or display_filename(item.get("path"))
+        await self.safe_send(
+            ctx,
+            f"📁 Queued folder `{folder_name}` with {len(folder_files)} files.",
+        )
+
+        folder_id = make_folder_id(item["username"], item.get("path"))
+        folder_notifications[folder_id] = {
+            "user_id": ctx.author.id,
+            "channel_id": ctx.channel.id,
+            "name": folder_name,
+            "total": len(folder_files),
+            "completed": 0,
+        }
+
+        for file_info in folder_files:
+            filename = file_info.get("filename")
+            key = make_transfer_key(item["username"], filename)
+            tracked_downloads[key] = {
+                "user_id": ctx.author.id,
+                "channel_id": ctx.channel.id,
+                "filename": display_filename(filename),
+                "notified": False,
+                "search_path": filename,
+                "folder_id": folder_id,
+            }
 
     @commands.command(name="progress", aliases=["status"])
     async def progress(self, ctx: commands.Context):
@@ -590,6 +738,7 @@ class SlskdCog(commands.Cog):
 
                         # Mark as notified to avoid repeat messages
                         tracked_downloads[key]["notified"] = True
+                        await self._handle_folder_progress(info)
                         needs_navidrome_scan = True  # Set the flag
 
                         # Optional: Remove from tracking after a while
