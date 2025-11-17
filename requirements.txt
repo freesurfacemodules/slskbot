@@ -1,0 +1,4 @@
+discord.py
+aiohttp
+slskd-api
+typing_extensions

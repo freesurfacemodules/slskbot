@@ -1,0 +1,25 @@
+# This is the configuration file for the slskd server.
+# It is set up to read sensitive values from environment variables
+# which are provided by the docker-compose.yml file.
+
+soulseek:
+  # These values are injected from the .env file
+  username: ${SLSK_USERNAME}
+  password: ${SLSK_PASSWORD}
+
+web:
+  authentication:
+    api_keys:
+      # This value is injected from the .env file
+      - key: ${SLSKD_API_KEY}
+        role: Administrator
+
+# Define the internal paths for downloads and shares.
+# These paths are mapped to Docker volumes in docker-compose.yml
+downloads:
+  path: /app/downloads
+  incomplete_path: /app/downloads/incomplete
+
+shares:
+  - path: /app/shares
+    alias: DockerShares

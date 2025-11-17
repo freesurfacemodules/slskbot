@@ -1,0 +1,4 @@
+slskd-python-api/
+__pycache__/
+.env
+.secret/

@@ -1,0 +1,120 @@
+# This file orchestrates running the slskd server, your discord bot,
+# and the Navidrome music server together.
+# Run `docker-compose up -d` to start.
+# Run `docker-compose down` to stop.
+
+services:
+  navidrome-config:
+    image: alpine:3.19
+    container_name: navidrome-config
+    restart: "no"
+    env_file: .env
+    entrypoint: ["/bin/sh", "/scripts/gen_navidrome_config.sh"]
+    volumes:
+      - navidrome_data:/data
+      - ./scripts:/scripts:ro,z
+
+  slskd-config:
+    image: alpine:3.19
+    container_name: slskd-config
+    restart: "no"
+    env_file: .env
+    entrypoint: ["/bin/sh", "/scripts/gen_slskd_config.sh"]
+    volumes:
+      - ./scripts:/scripts:ro,z
+      - ./slskd.yml:/templates/slskd.yml.template:ro,z
+      - ${HOST_SLSKD_DATA}:/app:z
+
+  # The slskd server
+  slskd:
+    image: slskd/slskd:latest
+    container_name: slskd-server
+    restart: unless-stopped
+    ports:
+      # Expose the API port to the host
+      - "5030:5030"
+      # Expose the P2P ports (both TCP and UDP)
+      - "50300:50300"
+      - "50300:50300/udp"
+    # Load all variables from .env file
+    env_file: .env
+    volumes:
+      # Persist slskd database, session, and logs
+      - ${HOST_SLSKD_DATA}:/app:z
+      # --- HOST BIND MOUNT for Downloads (Must point to your SSHFS/WebDAV mountpoint) ---
+      - ${HOST_DOWNLOADS_PATH}:/app/downloads:z
+      # --- HOST BIND MOUNT for Shares (Must point to your SSHFS/WebDAV mountpoint) ---
+      - ${HOST_SHARES_PATH}:/app/shares:z
+    depends_on:
+      slskd-config:
+        condition: service_completed_successfully
+    healthcheck:
+      # Test to see if the API is up and running before starting the bot
+      test:
+        [
+          "CMD",
+          "wget",
+          "-q",
+          "-S",
+          "-O",
+          "-",
+          "http://localhost:5030/application/version",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s # Give slskd time to start
+
+  # Your Discord bot
+  discord-bot:
+    # Build the bot's image from the Dockerfile in the current directory
+    build:
+      context: .
+    container_name: slskd-bot
+    restart: unless-stopped
+    # Load all variables from .env file
+    env_file: .env
+    environment:
+      # This is the key: Override the URL to use the internal Docker service name
+      # The bot will connect to 'http://slskd:5030'
+      - SLSKD_API_URL=http://slskd:5030
+    depends_on:
+      # Wait for the slskd service to be healthy before starting the bot
+      slskd:
+        condition: service_healthy
+
+  # The Navidrome music streaming server
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome-server
+    restart: unless-stopped
+    ports:
+      # Expose Navidrome's web UI
+      - "4533:4533"
+    env_file: .env
+    environment:
+      # --- New Admin Credentials ---
+      # Create an admin user on first launch
+      - ND_SECURITY_ADMINUSERNAME=${NAVIDROME_ADMIN_USER}
+      - ND_SECURITY_ADMINPASSWORD=${NAVIDROME_ADMIN_PASSWORD}
+
+      # Point Navidrome to its internal data directory
+      - ND_DATAFOLDER=/data
+      # Point Navidrome to the shared music/downloads directory
+      - ND_MUSICFOLDER=/music
+      # Set a reasonable scan schedule
+      - ND_SCANSCHEDULE=1h
+      - ND_LOGLEVEL=info
+    volumes:
+      # CRITICAL: Mount the *same HOST BIND MOUNT* as slskd's downloads
+      - ${HOST_DOWNLOADS_PATH}:/music:ro,z
+      # Create a named volume for Navidrome's database & cache (internal data)
+      - navidrome_data:/data:z
+    depends_on:
+      navidrome-config:
+        condition: service_completed_successfully
+
+# Define the named volumes for internal data persistence only
+# The media volumes are now defined by host paths in .env and do not need to be listed here.
+volumes:
+  navidrome_data:
