@@ -41,7 +41,7 @@ if not SLSKD_API_KEY:
 # --- Bot Setup ---
 intents = discord.Intents.default()
 intents.message_content = True  # Required for message-based commands
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # --- Logging ---
 logging.basicConfig(
@@ -56,9 +56,11 @@ class AsyncSlskdClient:
     def __init__(self, base_url: str, api_key: str):
         host = base_url.rstrip("/")
         self._client = SlskdClient(host=host, api_key=api_key, url_base="")
+        # All API facades share the same requests.Session
+        self._session = self._client.application.session
 
     async def close(self):
-        await asyncio.to_thread(self._client.session.close)
+        await asyncio.to_thread(self._session.close)
 
     async def start_search(self, query: str) -> Optional[str]:
         state = await self._call(self._client.searches.search_text, query)
@@ -296,6 +298,16 @@ class SlskdCog(commands.Cog):
         self.download_monitor.cancel()
         asyncio.create_task(self.api.close())
         logger.info("SlskdCog unloaded, API session close scheduled.")
+    async def safe_send(
+        self, ctx: commands.Context, content: Optional[str] = None, **kwargs
+    ):
+        """Send a message without relying on message history permissions."""
+        try:
+            if content is None and "embed" not in kwargs and "view" not in kwargs:
+                raise ValueError("safe_send requires content or embed/view")
+            return await ctx.reply(content, **kwargs)
+        except discord.Forbidden:
+            return await ctx.send(content, **kwargs)
 
     async def trigger_navidrome_scan(self):
         """Triggers a library scan on the Navidrome server."""
@@ -334,7 +346,7 @@ class SlskdCog(commands.Cog):
         Example: !search <your search query>
         """
         logger.info(f"User {ctx.author} starting search for: {query}")
-        msg = await ctx.reply(
+        msg = await ctx.send(
             f"🔍 Starting search for `{query}`... this may take a moment."
         )
 
@@ -379,8 +391,8 @@ class SlskdCog(commands.Cog):
         Example: !dl 5
         """
         if ctx.author.id not in user_search_results:
-            await ctx.reply(
-                "You don't have any active search results. Please use `!search` first."
+            await self.safe_send(
+                ctx, "You don't have any active search results. Please use `!search` first."
             )
             return
 
@@ -390,8 +402,9 @@ class SlskdCog(commands.Cog):
         index = number - 1
 
         if not (0 <= index < len(results)):
-            await ctx.reply(
-                f"Invalid number. Please pick a number between 1 and {len(results)}."
+            await self.safe_send(
+                ctx,
+                f"Invalid number. Please pick a number between 1 and {len(results)}.",
             )
             return
 
@@ -399,18 +412,18 @@ class SlskdCog(commands.Cog):
 
         try:
             if item["type"] != "file":
-                await ctx.reply("Folder downloads are not supported yet.")
+                await self.safe_send(ctx, "Folder downloads are not supported yet.")
                 return
 
             file_payload = dict(item["file"])
             file_payload["token"] = item["token"]
             success = await self.api.enqueue_files(item["username"], [file_payload])
             if not success:
-                await ctx.reply("Failed to queue download. Please try again.")
+                await self.safe_send(ctx, "Failed to queue download. Please try again.")
                 return
 
             filename = item["path"].split("/")[-1]
-            await ctx.reply(f"✅ Queued for download: `{filename}`")
+            await self.safe_send(ctx, f"✅ Queued for download: `{filename}`")
 
             transfer_key = make_transfer_key(item["username"], item["path"])
             tracked_downloads[transfer_key] = {
@@ -423,8 +436,8 @@ class SlskdCog(commands.Cog):
 
         except Exception as e:
             logger.error(f"Error during !dl command: {e}")
-            await ctx.reply(
-                f"An error occurred while trying to queue the download: {e}"
+            await self.safe_send(
+                ctx, f"An error occurred while trying to queue the download: {e}"
             )
 
     @commands.command(name="progress", aliases=["status"])
@@ -432,12 +445,12 @@ class SlskdCog(commands.Cog):
         """Shows the status of your ongoing slskd downloads."""
         transfers = await self.api.get_all_downloads()
         if transfers is None:
-            await ctx.reply(
-                "Could not retrieve download status or no active transfers."
+            await self.safe_send(
+                ctx, "Could not retrieve download status or no active transfers."
             )
             return
         if not transfers:
-            await ctx.reply("No active downloads found.")
+            await self.safe_send(ctx, "No active downloads found.")
             return
 
         user_downloads = []
@@ -458,7 +471,7 @@ class SlskdCog(commands.Cog):
                     )
 
         if not user_downloads:
-            await ctx.reply("No active downloads found.")
+            await self.safe_send(ctx, "No active downloads found.")
             return
 
         embed = discord.Embed(
@@ -466,7 +479,20 @@ class SlskdCog(commands.Cog):
             description="\n\n".join(user_downloads),
             color=discord.Color.green(),
         )
-        await ctx.reply(embed=embed)
+        await self.safe_send(ctx, embed=embed)
+
+    @commands.command(name="help", aliases=["commands", "?"], help="Show bot commands")
+    async def help_command(self, ctx: commands.Context):
+        """Lists the available bot commands."""
+        description = (
+            "`!search <query>` – run a Soulseek search.\n"
+            "`!dl <number>` – queue the indexed result from your latest search.\n"
+            "`!progress` / `!status` – show download progress."
+        )
+        embed = discord.Embed(
+            title="Available Commands", description=description, color=discord.Color.blurple()
+        )
+        await self.safe_send(ctx, embed=embed)
 
     @tasks.loop(seconds=30)
     async def download_monitor(self):
