@@ -156,7 +156,8 @@ def result_sort_key(item: Dict[str, Any]):
     else:
         segments = (item.get("display_name") or "",)
     type_rank = 0 if item.get("type") == "folder" else 1
-    return (segments, type_rank, item.get("display_name") or "")
+    username = (item.get("username") or "unknown").lower()
+    return (username, segments, type_rank, item.get("display_name") or "")
 
 
 class SearchResultPaginator(View):
@@ -249,6 +250,20 @@ class SearchResultPaginator(View):
                         ),
                     }
                 )
+
+        depth_by_user: Dict[str, int] = {}
+        for entry in flat_list:
+            user = entry.get("username", "unknown")
+            depth = entry.get("depth", 0)
+            current = depth_by_user.get(user)
+            if current is None or depth < current:
+                depth_by_user[user] = depth
+
+        for entry in flat_list:
+            user = entry.get("username", "unknown")
+            min_depth = depth_by_user.get(user, 0)
+            if min_depth:
+                entry["depth"] = max(entry.get("depth", 0) - min_depth, 0)
 
         flat_list.sort(key=result_sort_key)
         return flat_list
