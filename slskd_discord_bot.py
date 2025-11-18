@@ -410,6 +410,108 @@ class SearchResultPaginator(View):
             pass  # Message was deleted
 
 
+class DownloadProgressPaginator(View):
+    """Paginator used by the !progress command."""
+
+    def __init__(self, ctx: commands.Context, entries: List[Dict[str, Any]]):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.entries = entries
+        self.per_page = 10
+        self.current_page = 0
+        self.total_pages = max(1, -(-len(entries) // self.per_page))
+        self.message: Optional[discord.Message] = None
+        self.update_buttons()
+
+    def get_page_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="Download Progress", color=discord.Color.green())
+        if not self.entries:
+            embed.description = "No active downloads found."
+            return embed
+
+        start = self.current_page * self.per_page
+        chunk = self.entries[start : start + self.per_page]
+        description = "\n\n".join(entry["description"] for entry in chunk)
+        embed.description = description
+        embed.set_footer(text=f"Page {self.current_page + 1} of {self.total_pages}")
+        return embed
+
+    async def update_message(self, interaction: discord.Interaction):
+        self.update_buttons()
+        await interaction.response.edit_message(
+            embed=self.get_page_embed(), view=self
+        )
+
+    async def push_update(self):
+        if self.message:
+            await self.message.edit(embed=self.get_page_embed(), view=self)
+
+    def update_buttons(self):
+        self.prev_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+        self.first_page_button.disabled = self.current_page == 0
+        self.last_page_button.disabled = self.current_page >= self.total_pages - 1
+
+    @button(label="<< First", style=discord.ButtonStyle.secondary, row=0)
+    async def first_page_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message(
+                "This is not your progress view.", ephemeral=True
+            )
+            return
+        self.current_page = 0
+        await self.update_message(interaction)
+
+    @button(label="< Prev", style=discord.ButtonStyle.primary, row=0)
+    async def prev_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message(
+                "This is not your progress view.", ephemeral=True
+            )
+            return
+        self.current_page -= 1
+        await self.update_message(interaction)
+
+    @button(label="Next >", style=discord.ButtonStyle.primary, row=0)
+    async def next_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message(
+                "This is not your progress view.", ephemeral=True
+            )
+            return
+        self.current_page += 1
+        await self.update_message(interaction)
+
+    @button(label="Last >>", style=discord.ButtonStyle.secondary, row=0)
+    async def last_page_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message(
+                "This is not your progress view.", ephemeral=True
+            )
+            return
+        self.current_page = self.total_pages - 1
+        await self.update_message(interaction)
+
+    @button(label="Close", style=discord.ButtonStyle.danger, row=1)
+    async def close_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user != self.ctx.author:
+            await interaction.response.send_message(
+                "This is not your progress view.", ephemeral=True
+            )
+            return
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content="Progress view timed out.", view=self)
+            except discord.NotFound:
+                pass
 # --- Bot Cog ---
 class SlskdCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -422,16 +524,21 @@ class SlskdCog(commands.Cog):
         asyncio.create_task(self.api.close())
         logger.info("SlskdCog unloaded, API session close scheduled.")
     async def safe_send(
-        self, ctx: commands.Context, content: Optional[str] = None, **kwargs
+        self,
+        ctx: commands.Context,
+        content: Optional[str] = None,
+        prefer_reply: bool = True,
+        **kwargs,
     ):
         """Send a message without relying on message history permissions."""
         if content is None and "embed" not in kwargs and "view" not in kwargs:
             raise ValueError("safe_send requires content or embed/view")
 
-        try:
-            return await ctx.reply(content, **kwargs)
-        except discord.Forbidden:
-            pass
+        if prefer_reply:
+            try:
+                return await ctx.reply(content, **kwargs)
+            except discord.Forbidden:
+                pass
 
         try:
             return await ctx.send(content, **kwargs)
@@ -656,7 +763,7 @@ class SlskdCog(commands.Cog):
             await self.safe_send(ctx, "No active downloads found.")
             return
 
-        user_downloads = []
+        entries = []
         for transfer in transfers:
             username = transfer.get("username")
             for directory in transfer.get("directories", []):
@@ -668,21 +775,41 @@ class SlskdCog(commands.Cog):
                     filename = display_filename(file_info.get("filename"))
                     percent = file_info.get("percentComplete", 0) or 0
                     bar = "🟩" * int(percent / 10) + "⬜" * (10 - int(percent / 10))
-
-                    user_downloads.append(
-                        f"**{filename}** (from {username})\n`{state}` | {bar} | `{percent:.1f}%`"
+                    timestamp = (
+                        file_info.get("requestedAt")
+                        or file_info.get("enqueuedAt")
+                        or file_info.get("startedAt")
+                        or ""
+                    )
+                    entries.append(
+                        {
+                            "username": username,
+                            "filename": filename,
+                            "state": state,
+                            "bar": bar,
+                            "percent": percent,
+                            "timestamp": timestamp,
+                            "description": f"**{filename}** (from {username})\n`{state}` | {bar} | `{percent:.1f}%`",
+                        }
                     )
 
-        if not user_downloads:
+        if not entries:
             await self.safe_send(ctx, "No active downloads found.")
             return
 
-        embed = discord.Embed(
-            title="Download Progress",
-            description="\n\n".join(user_downloads),
-            color=discord.Color.green(),
+        entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+
+        paginator = DownloadProgressPaginator(ctx, entries)
+        message = await self.safe_send(
+            ctx,
+            embed=paginator.get_page_embed(),
+            view=paginator,
+            prefer_reply=False,
         )
-        await self.safe_send(ctx, embed=embed)
+        if isinstance(message, discord.Message):
+            paginator.message = message
+        else:
+            paginator.stop()
 
     @commands.command(name="help", aliases=["commands", "?"], help="Show bot commands")
     async def help_command(self, ctx: commands.Context):
