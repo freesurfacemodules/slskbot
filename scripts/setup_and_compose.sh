@@ -13,7 +13,7 @@ set -a
 . "$ENV_FILE"
 set +a
 
-REQUIRED_VARS=(HOST_DOWNLOADS_PATH HOST_SHARES_PATH HOST_SLSKD_DATA)
+REQUIRED_VARS=(HOST_DOWNLOADS_PATH HOST_SHARES_PATH HOST_SLSKD_DATA HOST_NAVIDROME_DATA)
 
 for var in "${REQUIRED_VARS[@]}"; do
   if [ -z "${!var:-}" ]; then
@@ -61,6 +61,7 @@ fix_permissions() {
 fix_permissions "$HOST_DOWNLOADS_PATH"
 fix_permissions "$HOST_SHARES_PATH"
 fix_permissions "$HOST_SLSKD_DATA"
+fix_permissions "$HOST_NAVIDROME_DATA"
 
 echo "Directories prepared. Launching docker compose..."
 "${COMPOSE_CMD[@]}" up -d --build "$@"

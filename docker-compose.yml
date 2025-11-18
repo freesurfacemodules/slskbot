@@ -11,7 +11,7 @@ services:
     env_file: .env
     entrypoint: ["/bin/sh", "/scripts/gen_navidrome_config.sh"]
     volumes:
-      - navidrome_data:/data
+      - ${HOST_NAVIDROME_DATA}:/data:z
       - ./scripts:/scripts:ro,z
 
   slskd-config:
@@ -108,13 +108,11 @@ services:
     volumes:
       # CRITICAL: Mount the *same HOST BIND MOUNT* as slskd's downloads
       - ${HOST_DOWNLOADS_PATH}:/music:ro,z
-      # Create a named volume for Navidrome's database & cache (internal data)
-      - navidrome_data:/data:z
+      # Bind mount for Navidrome's persistent data (DB/cache)
+      - ${HOST_NAVIDROME_DATA}:/data:z
     depends_on:
       navidrome-config:
         condition: service_completed_successfully
 
 # Define the named volumes for internal data persistence only
 # The media volumes are now defined by host paths in .env and do not need to be listed here.
-volumes:
-  navidrome_data:

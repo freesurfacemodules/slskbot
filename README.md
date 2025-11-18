@@ -31,6 +31,7 @@ A. Discord & Soulseek Secrets
 - DISCORD_BOT_TOKEN: Your Discord bot token.
 - SLSK_USERNAME / SLSK_PASSWORD: Your Soulseek login credentials.
 - SLSKD_API_KEY: A long, random key you create. This secures the slskd API.
+- SLSKD_ADMIN_USER / SLSKD_ADMIN_PASSWORD: Credentials for the slskd web UI login.
 B. Navidrome Credentials
 - NAVIDROME_ADMIN_USER / NAVIDROME_ADMIN_PASSWORD: Credentials for the
   Navidrome admin account. The bot uses these to trigger library scans.
@@ -46,6 +47,9 @@ These define the HOST directory paths where your remote storage is mounted.
   *Example: /mnt/remote/music/slskd_downloads
 - HOST_SHARES_PATH: The absolute path on your host OS where your slskd share folder is mounted.
   *Example: /mnt/remote/music/slskd_shares
+- HOST_NAVIDROME_DATA: Absolute host path where Navidrome should persist its database/cache.
+  *Example: /srv/navidrome/data
+  *Note: slskd automatically shares the downloads directory so finished files become available to other users.
 --- 2. RUNNING THE SYSTEM ---
 1. Build and Start: Open a terminal in your project directory and run:
    ./scripts/setup_and_compose.sh

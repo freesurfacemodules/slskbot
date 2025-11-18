@@ -9,17 +9,25 @@ soulseek:
 
 web:
   authentication:
+    username: ${SLSKD_ADMIN_USER}
+    password: ${SLSKD_ADMIN_PASSWORD}
     api_keys:
-      # This value is injected from the .env file
-      - key: ${SLSKD_API_KEY}
-        role: Administrator
+      slskbot:
+        key: ${SLSKD_API_KEY}
+        role: administrator
+        cidr: 0.0.0.0/0,::/0
 
-# Define the internal paths for downloads and shares.
-# These paths are mapped to Docker volumes in docker-compose.yml
-downloads:
-  path: /app/downloads
-  incomplete_path: /app/downloads/incomplete
+# Internal directories map to Docker volumes in docker-compose.yml
+directories:
+  downloads: /app/downloads
+  incomplete: /app/downloads/incomplete
 
 shares:
-  - path: /app/shares
-    alias: DockerShares
+  directories:
+    - /app/downloads
+  filters:
+    - \.ini$
+    - Thumbs.db$
+    - \.DS_Store$
+  cache:
+    storage_mode: memory
