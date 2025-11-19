@@ -32,6 +32,8 @@ A. Discord & Soulseek Secrets
 - SLSK_USERNAME / SLSK_PASSWORD: Your Soulseek login credentials.
 - SLSKD_API_KEY: A long, random key you create. This secures the slskd API.
 - SLSKD_ADMIN_USER / SLSKD_ADMIN_PASSWORD: Credentials for the slskd web UI login.
+- SLSKD_DOMAIN / NAVIDROME_DOMAIN: Public FQDNs that route to your VPS (e.g., slskd.cratedaemon.space).
+- LETSENCRYPT_EMAIL: Email used for Let's Encrypt expiry notices.
 B. Navidrome Credentials
 - NAVIDROME_ADMIN_USER / NAVIDROME_ADMIN_PASSWORD: Credentials for the
   Navidrome admin account. The bot uses these to trigger library scans.
@@ -40,23 +42,42 @@ B. Navidrome Credentials
   comes up with a ready admin account each time.
 C. Host Mount Paths (CRITICAL)
 These define the HOST directory paths where your remote storage is mounted.
+- HOST_MEDIA_PATH: Single directory (usually an SSHFS mount) that contains all
+  downloaded media. Both HOST_DOWNLOADS_PATH and HOST_SHARES_PATH reference this
+  path downstream.
+- HOST_DOWNLOADS_PATH / HOST_SHARES_PATH: Typically set to `${HOST_MEDIA_PATH}`.
 - HOST_SLSKD_DATA: Absolute host path where slskd should persist its internal
   database, cache, and logs. Example: /srv/slskd/data (create it locally).
-- HOST_DOWNLOADS_PATH: The absolute path on your host OS where your completed
-  downloads remote folder is mounted. This path is shared between slskd and Navidrome.
-  *Example: /mnt/remote/music/slskd_downloads
-- HOST_SHARES_PATH: The absolute path on your host OS where your slskd share folder is mounted.
-  *Example: /mnt/remote/music/slskd_shares
 - HOST_NAVIDROME_DATA: Absolute host path where Navidrome should persist its database/cache.
   *Example: /srv/navidrome/data
   *Note: slskd automatically shares the downloads directory so finished files become available to other users.
+D. Hetzner Storage Box (SSHFS) Details
+- STORAGEBOX_HOST / STORAGEBOX_PORT / STORAGEBOX_USER: Connection info for your
+  Hetzner Storage Box.
+- STORAGEBOX_PASSWORD: Used once to install the SSH key (script prompts only if set here).
+- STORAGEBOX_REMOTE_PATH: Directory on the storage box where media should live (created automatically).
+--- INITIAL SYSTEM SETUP (Ubuntu 24.04) ---
+1. Copy `.env` onto the VPS and fill in all required variables (domains, storage
+   credentials, media paths, etc.).
+2. Install dependencies and configure the SSHFS mount:
+   sudo ./scripts/install_system.sh
+   - Installs Docker, docker-compose plugin, git, sshfs, sshpass, openssl.
+   - Generates an SSH key (if missing), installs it on the Hetzner Storage Box,
+     creates the remote directory, enables `user_allow_other`, and configures a
+     systemd automount that reconnects automatically.
+3. Log out/log back in (or `newgrp docker`) if you want to run Docker commands without sudo.
+
 --- 2. RUNNING THE SYSTEM ---
-1. Build and Start: Open a terminal in your project directory and run:
-   ./scripts/setup_and_compose.sh
-   - The script ensures your bind-mount directories exist with write permissions and
-     then runs `docker compose up -d --build` (pass extra args to forward them).
-   - The helper containers run automatically to inject navidrome.toml and slskd.yml,
-     then exit.
+1. Build and Start (Dev): Open a terminal in your project directory and run:
+   ./scripts/setup_dev.sh
+   - Ensures bind-mounts exist and launches the stack with the development nginx config (slskd.localhost/navidrome.localhost).
+   - Update your `/etc/hosts` (or OS equivalent) with `127.0.0.1 slskd.localhost navidrome.localhost` to access the UIs locally.
+2. Build and Start (Prod): Once DNS for `SLSKD_DOMAIN`/`NAVIDROME_DOMAIN` points to your VPS (both records should resolve to the server's public IP), run:
+   ./scripts/setup_prod.sh
+   - Renders `config/nginx.prod.conf` from `.env`, ensures bind mounts and the `certbot/` directories exist, generates a temporary self-signed cert (so nginx can boot), and launches the stack via `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
+   - After nginx is up, the script runs `certbot-init` once to request Let's Encrypt certificates for both domains, then reloads nginx to start serving HTTPS immediately.
+   - The always-on `certbot-renew` service (defined in `docker-compose.prod.yml`) runs `certbot renew` every ~12h and sends `HUP` to nginx when certificates change, making renewals hands-free.
+   - To redeploy, simply rerun `./scripts/setup_prod.sh`; it will reuse existing certs and config.
 2. Verify Service Health: Check the status of your containers. Ensure 'slskd'
    is *healthy* before the bot will start interacting with it.
    docker-compose ps

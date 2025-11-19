@@ -1,4 +1,7 @@
 slskd-python-api/
 __pycache__/
-.env
+.env*
 .secret/
+certbot/**
+!certbot/.gitkeep
+config/nginx.prod.conf

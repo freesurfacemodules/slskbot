@@ -31,9 +31,7 @@ services:
     container_name: slskd-server
     restart: unless-stopped
     ports:
-      # Expose the API port to the host
-      - "5030:5030"
-      # Expose the P2P ports (both TCP and UDP)
+      # Expose the P2P ports (both TCP and UDP) to the host
       - "50300:50300"
       - "50300:50300/udp"
     # Load all variables from .env file
@@ -88,10 +86,10 @@ services:
     image: deluan/navidrome:latest
     container_name: navidrome-server
     restart: unless-stopped
-    ports:
-      # Expose Navidrome's web UI
-      - "4533:4533"
     env_file: .env
+    depends_on:
+      navidrome-config:
+        condition: service_completed_successfully
     environment:
       # --- New Admin Credentials ---
       # Create an admin user on first launch
@@ -110,9 +108,23 @@ services:
       - ${HOST_DOWNLOADS_PATH}:/music:ro,z
       # Bind mount for Navidrome's persistent data (DB/cache)
       - ${HOST_NAVIDROME_DATA}:/data:z
+
+  nginx:
+    image: nginx:latest
+    container_name: slskd-nginx
+    restart: unless-stopped
     depends_on:
-      navidrome-config:
-        condition: service_completed_successfully
+      - slskd
+      - navidrome
+    ports:
+      - "80:80"
+    volumes:
+      - ./config/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/www:/var/www/certbot:ro
+      - ./certbot/letsencrypt:/etc/letsencrypt:ro
+      - nginx_run:/var/run/nginx
 
 # Define the named volumes for internal data persistence only
 # The media volumes are now defined by host paths in .env and do not need to be listed here.
+volumes:
+  nginx_run:
