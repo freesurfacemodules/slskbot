@@ -34,7 +34,7 @@ for var in "${REQUIRED_VARS[@]}"; do
 done
 
 apt-get update
-apt-get install -y docker.io docker-compose-plugin git sshfs sshpass openssl
+apt-get install -y docker.io docker-compose-v2 git sshfs sshpass openssl
 systemctl enable --now docker
 
 if ! grep -q '^user_allow_other' /etc/fuse.conf; then
