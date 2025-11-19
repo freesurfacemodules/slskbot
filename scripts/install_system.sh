@@ -64,8 +64,10 @@ chown -R "$LOCAL_UID":"$LOCAL_GID" "$LOCAL_MEDIA"
 mkdir -p "$HOST_SLSKD_DATA" "$HOST_NAVIDROME_DATA"
 chown -R "$LOCAL_UID":"$LOCAL_GID" "$HOST_SLSKD_DATA" "$HOST_NAVIDROME_DATA"
 
-MOUNT_UNIT=/etc/systemd/system/storagebox-slskd.mount
-AUTOMOUNT_UNIT=/etc/systemd/system/storagebox-slskd.automount
+MOUNT_UNIT_NAME=$(systemd-escape --path --suffix=mount "$LOCAL_MEDIA")
+AUTOMOUNT_UNIT_NAME=$(systemd-escape --path --suffix=automount "$LOCAL_MEDIA")
+MOUNT_UNIT=/etc/systemd/system/$MOUNT_UNIT_NAME
+AUTOMOUNT_UNIT=/etc/systemd/system/$AUTOMOUNT_UNIT_NAME
 
 cat > "$MOUNT_UNIT" <<MOUNT
 [Unit]
@@ -96,7 +98,7 @@ WantedBy=multi-user.target
 AUTOMOUNT
 
 systemctl daemon-reload
-systemctl enable --now storagebox-slskd.automount
-systemctl restart storagebox-slskd.mount || true
+systemctl enable --now "$AUTOMOUNT_UNIT_NAME"
+systemctl restart "$MOUNT_UNIT_NAME" || true
 
 echo "System dependencies installed and SSHFS mount configured."
