@@ -12,6 +12,7 @@ services:
     container_name: certbot-init
     restart: "no"
     env_file: .env
+    network_mode: service:nginx
     command: >
       certonly --webroot --webroot-path=/var/www/certbot
       --email ${LETSENCRYPT_EMAIL} --agree-tos --no-eff-email --keep-until-expiring
@@ -27,6 +28,7 @@ services:
     container_name: certbot-renew
     restart: unless-stopped
     env_file: .env
+    network_mode: service:nginx
     command: >
       /bin/sh -c "while true; do certbot renew --webroot --webroot-path=/var/www/certbot --deploy-hook 'kill -HUP $(cat /var/run/nginx/nginx.pid)' || true; sleep 12h; done"
     volumes:
