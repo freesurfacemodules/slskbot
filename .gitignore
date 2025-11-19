@@ -5,3 +5,4 @@ __pycache__/
 certbot/**
 !certbot/.gitkeep
 config/nginx.prod.conf
+scripts/push_prod_env.sh
