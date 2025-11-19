@@ -59,6 +59,7 @@ fix_permissions "$HOST_SLSKD_DATA"
 fix_permissions "$HOST_NAVIDROME_DATA"
 
 mkdir -p certbot/www certbot/letsencrypt
+mkdir -p "$HOST_MEDIA_PATH"/incomplete
 
 # Render nginx prod config
 ./scripts/render_nginx_conf.sh
@@ -90,6 +91,9 @@ create_dummy_cert
 COMPOSE_CMD=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
 
 "${COMPOSE_CMD[@]}" up -d --build "$@"
+
+# Give nginx a moment to start so the network exists
+sleep 5
 
 # Obtain/renew certificates
 "${COMPOSE_CMD[@]}" run --rm certbot-init || true
