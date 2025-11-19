@@ -51,7 +51,7 @@ if [ ! -f "$SSH_KEY" ]; then
 fi
 
 ssh-keyscan -p "$STORAGEBOX_PORT" "$STORAGEBOX_HOST" >> "$SSH_DIR/known_hosts"
-sshpass -p "$STORAGEBOX_PASSWORD" ssh-copy-id -i "$SSH_KEY.pub" -p "$STORAGEBOX_PORT" "$STORAGEBOX_USER@$STORAGEBOX_HOST"
+sshpass -p "$STORAGEBOX_PASSWORD" ssh-copy-id -i "$SSH_KEY.pub" -p "$STORAGEBOX_PORT" -s "$STORAGEBOX_USER@$STORAGEBOX_HOST"
 
 ssh -i "$SSH_KEY" -p "$STORAGEBOX_PORT" "$STORAGEBOX_USER@$STORAGEBOX_HOST" \
   "mkdir -p '$STORAGEBOX_REMOTE_PATH'"
