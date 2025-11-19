@@ -118,6 +118,7 @@ services:
       - navidrome
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./config/nginx.dev.conf:/etc/nginx/nginx.conf:ro
       - ./certbot/www:/var/www/certbot:ro
